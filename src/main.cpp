@@ -10,6 +10,7 @@ bool ner;
 bool upp;
 bool open_full;
 bool close_full;
+bool emergency_stop = false; // Emergency stop flag
 // Flags to prevent multiple triggers
 bool blindsOpenedToday = false;
 bool blindsClosedToday = false;
@@ -18,6 +19,18 @@ int openHour = 7;
 int openMinute = 0;
 int closeHour = 20;
 int closeMinute = 0;
+// Motor pins (ULN2003 for 28BYJ-48 stepper)
+#define IN1 32
+#define IN2 25
+#define IN3 27
+#define IN4 12
+
+const int stepsPerRevolution = 4096 / 2;
+const int stepsToOpenAndClose = 90845;
+
+// Create an instance of AccelStepper
+AccelStepper stepper(AccelStepper::FULL4WIRE, IN1, IN3, IN2, IN4);
+
 BlynkTimer timer;
 
 // NTP server settings
@@ -47,6 +60,19 @@ BLYNK_WRITE(V5)
   close_full = param.asInt();
 }
 
+BLYNK_WRITE(V6) // Emergency stop button
+{
+  emergency_stop = param.asInt();
+  if (emergency_stop)
+  {
+    // Immediately stop the motor
+    stepper.stop();
+    stepper.setSpeed(0);
+    stepper.setCurrentPosition(stepper.currentPosition());
+    Serial.println("Emergency stop activated!");
+  }
+}
+
 BLYNK_WRITE(V3) // Open Time from app
 {
   TimeInputParam t(param);
@@ -67,39 +93,16 @@ BLYNK_WRITE(V2) // Close Time from app
 {
   TimeInputParam t(param);
 
-  if (t.hasStartTime())
-  {
-    closeHour = t.getStartHour();
-    closeMinute = t.getStartMinute();
-    blindsClosedToday = false;
-    Serial.print("New close time: ");
-    Serial.print(closeHour);
-    Serial.print(":");
-    Serial.println(closeMinute);
-  }
+  // Timeout duration in milliseconds
 }
-
-// Motor pins (ULN2003 for 28BYJ-48 stepper)
-#define IN1 32
-#define IN2 25
-#define IN3 27
-#define IN4 12
-
-const int stepsPerRevolution = 4096 / 2;
-const int stepsToOpenAndClose = 90845;
 
 // Timeout duration in milliseconds
 const unsigned long BLINDS_TIMEOUT = 10 * 60 * 1000; // 10 minutes
 
 // Gradual opening percentage
-const double GRADUAL_OPENING_PERCENTAGE = 0.1; // 10%
+const double GRADUAL_OPENING_PERCENTAGE = 0.05; // 1%
 // Time before gradual opening in minutes
-const int TIME_BEFORE_GRADUAL_OPENING = 10;
-// Number of steps for gradual opening
-const double GRADUAL_OPENING_STEPS = stepsToOpenAndClose * GRADUAL_OPENING_PERCENTAGE;
-
-// Create an instance of AccelStepper
-AccelStepper stepper(AccelStepper::FULL4WIRE, IN1, IN3, IN2, IN4);
+const int TIME_BEFORE_GRADUAL_OPENING = 5;
 
 // --- Timeout function ---
 bool hasTimedOut(unsigned long startTime, unsigned long timeoutDuration)
@@ -128,15 +131,22 @@ void openBlinds()
   unsigned long startTime = millis();
   stepper.moveTo(-stepsToOpenAndClose);
 
-  while (stepper.distanceToGo() != 0)
+  while (stepper.distanceToGo() != 0 && !emergency_stop)
   {
-    RunAll(); // Run motor until it reaches the target position
+    RunAll(); // Run motor until it reaches the target position or stop button pressed
     if (hasTimedOut(startTime, BLINDS_TIMEOUT))
     {
       Serial.println("Stopping motor due to timeout.");
       break;
     }
   }
+
+  if (emergency_stop)
+  {
+    Serial.println("Emergency stop triggered during opening.");
+    emergency_stop = false; // Reset the flag
+  }
+
   stepper.setSpeed(0);
 }
 
@@ -159,11 +169,18 @@ void closeBlinds()
 }
 
 // Helper function to open blinds incrementally
-void openBlindsIncrementally()
+void openBlindsGradually()
 {
   Serial.println("Opening blinds incrementally...");
   unsigned long startTime = millis();
-  stepper.moveTo(-GRADUAL_OPENING_STEPS);
+
+  // Save current speed setting
+  float originalSpeed = stepper.maxSpeed();
+
+  // Set lower speed for gradual opening
+  // stepper.setMaxSpeed(10.0);
+
+  stepper.moveTo(-stepsToOpenAndClose * GRADUAL_OPENING_PERCENTAGE);
 
   while (stepper.distanceToGo() != 0)
   {
@@ -175,6 +192,8 @@ void openBlindsIncrementally()
     }
   }
   stepper.setSpeed(0);
+  // Restore original speed setting
+  stepper.setMaxSpeed(originalSpeed);
 }
 
 // --- Check Time function ---
@@ -214,11 +233,10 @@ void checkTime()
   Serial.printf("Gradual start: %02d:%02d\n", gradualStartHour, gradualStartMinute);
 
   if (!blindsOpenedToday && !incrementalOpeningStarted &&
-      ((currentHour == gradualStartHour && currentMinute >= gradualStartMinute) ||
-       (currentHour == openHour && currentMinute < openMinute)))
+      (currentHour == gradualStartHour && currentMinute == gradualStartMinute))
   {
     incrementalOpeningStarted = true; // Set the flag to prevent multiple triggers
-    openBlindsIncrementally();
+    openBlindsGradually();
   }
 
   // Full opening at the scheduled time
@@ -253,8 +271,8 @@ void setup()
   Serial.begin(115200);
 
   // Stepper motor settings
-  stepper.setMaxSpeed(300.0);    // steps per second
-  stepper.setAcceleration(10.0); // steps per second^2
+  stepper.setMaxSpeed(150.0);    // steps per second
+  stepper.setAcceleration(50.0); // steps per second^2
 
   // Connect to WiFi and Blynk
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
@@ -264,6 +282,12 @@ void setup()
 
   // Set up timer to check every 10 seconds
   timer.setInterval(10000L, checkTime);
+
+  // Re-sync NTP every hour (in milliseconds)
+  timer.setInterval(1L * 60L * 60L * 1000L, []()
+                    {
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    Serial.println("NTP re-sync triggered."); });
 }
 
 void loop()
