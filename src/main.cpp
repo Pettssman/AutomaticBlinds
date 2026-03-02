@@ -36,10 +36,16 @@ bool blindsClosedToday = false;
 bool incrementalOpeningStarted = false;
 
 // Time settings
-int openHour = 7;
+int openHour = 8;
 int openMinute = 0;
 int closeHour = 20;
 int closeMinute = 0;
+
+// Time settings Weekend
+int openHour_weekend = 10;
+int openMinute_weekend = 0;
+int closeHour_weekend = 20;
+int closeMinute_weekend = 0;
 
 // Create instances
 AccelStepper stepper(AccelStepper::FULL4WIRE, IN1, IN3, IN2, IN4);
@@ -107,6 +113,30 @@ BLYNK_WRITE(V2)
     closeMinute = t.getStartMinute();
     blindsClosedToday = false;
     Serial.printf("New close time: %d:%d\n", closeHour, closeMinute);
+  }
+}
+
+BLYNK_WRITE(V8)
+{
+  TimeInputParam t(param);
+  if (t.hasStartTime())
+  {
+    openHour_weekend = t.getStartHour();
+    openMinute_weekend = t.getStartMinute();
+    blindsOpenedToday = false;
+    Serial.printf("New open time weekend: %d:%d\n", openHour_weekend, openMinute_weekend);
+  }
+}
+
+BLYNK_WRITE(V7)
+{
+  TimeInputParam t(param);
+  if (t.hasStartTime())
+  {
+    closeHour_weekend = t.getStartHour();
+    closeMinute_weekend = t.getStartMinute();
+    blindsClosedToday = false;
+    Serial.printf("New close time weekend: %d:%d\n", closeHour_weekend, closeMinute_weekend);
   }
 }
 
@@ -205,16 +235,25 @@ void checkTime()
 
   int currentHour = timeinfo.tm_hour;
   int currentMinute = timeinfo.tm_min;
+  int currentDay = timeinfo.tm_wday; // 0 = Sunday, 6 = Saturday
 
-  Serial.printf("Time %02d:%02d\n", currentHour, currentMinute);
+  bool isWeekend = (currentDay == 0 || currentDay == 6);
+
+  // Select the appropriate open/close times based on day of week
+  int activeOpenHour = isWeekend ? openHour_weekend : openHour;
+  int activeOpenMinute = isWeekend ? openMinute_weekend : openMinute;
+  int activeCloseHour = isWeekend ? closeHour_weekend : closeHour;
+  int activeCloseMinute = isWeekend ? closeMinute_weekend : closeMinute;
+
+  Serial.printf("Time %02d:%02d (%s)\n", currentHour, currentMinute, isWeekend ? "weekend" : "weekday");
   Serial.printf("Blinds opened: %s, closed: %s\n",
                 blindsOpenedToday ? "true" : "false",
                 blindsClosedToday ? "true" : "false");
   Serial.println(stepper.currentPosition());
 
   // Calculate gradual opening time
-  int gradualStartHour = openHour;
-  int gradualStartMinute = openMinute - TIME_BEFORE_GRADUAL_OPENING;
+  int gradualStartHour = activeOpenHour;
+  int gradualStartMinute = activeOpenMinute - TIME_BEFORE_GRADUAL_OPENING;
 
   if (gradualStartMinute < 0)
   {
@@ -237,7 +276,7 @@ void checkTime()
   }
 
   // Handle full opening
-  if (currentHour == openHour && currentMinute == openMinute && !blindsOpenedToday)
+  if (currentHour == activeOpenHour && currentMinute == activeOpenMinute && !blindsOpenedToday)
   {
     blindsOpenedToday = true;
     openBlinds();
@@ -246,7 +285,7 @@ void checkTime()
   }
 
   // Handle closing
-  if (currentHour == closeHour && currentMinute == closeMinute && !blindsClosedToday)
+  if (currentHour == activeCloseHour && currentMinute == activeCloseMinute && !blindsClosedToday)
   {
     blindsClosedToday = true;
     closeBlinds();
