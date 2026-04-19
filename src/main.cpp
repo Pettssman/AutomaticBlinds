@@ -326,9 +326,18 @@ void loop()
   RunAll();
 
   if (open_full)
+  {
     openBlinds();
+    blindsOpenedToday = true;
+    blindsClosedToday = false;
+    incrementalOpeningStarted = false;
+  }
   if (close_full)
+  {
     closeBlinds();
+    blindsClosedToday = true;
+    blindsOpenedToday = false;
+  }
 
   if (ner || upp)
   {
